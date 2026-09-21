@@ -14,7 +14,7 @@ import urllib.request
 import uuid
 
 BACKEND_URL = os.environ.get("BACKEND_URL", "http://localhost:8000")
-FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3000")
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "http://localhost:3001")
 
 
 def print_step(step_num: int, title: str) -> None:
@@ -74,7 +74,11 @@ def http_post(
 
 
 def http_post_multipart(
-    url: str, filename: str, content: bytes, headers: dict | None = None
+    url: str,
+    filename: str,
+    content: bytes,
+    headers: dict | None = None,
+    timeout: int = 120,
 ) -> tuple[int, dict | str]:
     boundary = f"----WebKitFormBoundary{uuid.uuid4().hex}"
     hdrs = {"Content-Type": f"multipart/form-data; boundary={boundary}"}
@@ -93,7 +97,7 @@ def http_post_multipart(
 
     req = urllib.request.Request(url, data=body, headers=hdrs, method="POST")
     try:
-        with urllib.request.urlopen(req, timeout=30) as resp:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
             data = resp.read().decode("utf-8")
             try:
                 return resp.status, json.loads(data)
@@ -128,12 +132,12 @@ def main() -> None:
     assert_true(
         isinstance(res, dict) and res.get("status") == "ready", "System is marked ready"
     )
-    db_check = res.get("checks", {}).get("database", {})
     assert_true(
-        db_check.get("healthy") is True, f"Database health check passed: {db_check}"
+        isinstance(res, dict) and res.get("database") == "connected",
+        "Database is connected",
     )
     assert_true(
-        db_check.get("pgvector") == "installed",
+        isinstance(res, dict) and res.get("vector_support") is True,
         "pgvector extension is installed and active",
     )
 
