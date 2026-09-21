@@ -1,0 +1,40 @@
+# Git and metadata
+.git
+.gitignore
+.github
+
+# Python bytecode and caches
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+.mypy_cache
+
+# Virtual environments
+.venv
+venv
+ENV
+
+# Node artifacts
+node_modules
+dist
+.npm
+
+# Environment variables & secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.cert
+
+# Temporary & build files
+*.log
+*.tmp
+.DS_Store
+data/uploads/*
+!data/uploads/.gitkeep

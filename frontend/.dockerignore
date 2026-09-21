@@ -1,0 +1,16 @@
+# Git & CI
+.git
+.gitignore
+.github
+
+# Node dependencies & build artifacts
+node_modules
+dist
+.npm
+
+# Logs & temp files
+*.log
+.DS_Store
+.env
+.env.*
+!.env.example

@@ -1,0 +1,30 @@
+# Git & CI
+.git
+.gitignore
+.github
+
+# Python caches & virtual environment
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+.mypy_cache
+.venv
+venv
+
+# Secrets & environment
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Data & temporary files
+*.log
+.DS_Store
+data/uploads/*
+!data/uploads/.gitkeep
