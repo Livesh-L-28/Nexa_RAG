@@ -12,10 +12,14 @@ from slowapi import Limiter, _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.util import get_remote_address
 
+from app.api.routes.admin import router as admin_router
+from app.api.routes.analytics import router as analytics_router
 from app.api.routes.auth import router as auth_router
+from app.api.routes.cache import router as cache_router
 from app.api.routes.chat import router as chat_router
 from app.api.routes.documents import router as documents_router
 from app.api.routes.health import router as health_router
+from app.api.routes.memory import router as memory_router
 from app.core.config import get_settings
 from app.core.exceptions import AppException
 from app.core.logging import logger
@@ -39,8 +43,52 @@ async def lifespan(app: FastAPI):
     try:
         await init_db()
         logger.info("Database initialized successfully.")
+
+        # Verify and seed default accounts
+        from sqlalchemy import select
+
+        from app.core.security import hash_password
+        from app.database.connection import AsyncSessionLocal
+        from app.database.models import User
+
+        async with AsyncSessionLocal() as db:
+            # Verify or create Admin
+            admin_res = await db.execute(select(User).where(User.email == "admin@nexarag.ai"))
+            admin_user = admin_res.scalar_one_or_none()
+            if not admin_user:
+                db.add(
+                    User(
+                        email="admin@nexarag.ai",
+                        password_hash=hash_password("adminpassword123"),
+                        role="ADMIN",
+                        is_active=True,
+                    )
+                )
+            else:
+                admin_user.role = "ADMIN"
+                admin_user.password_hash = hash_password("adminpassword123")
+                admin_user.is_active = True
+
+            # Verify or create Demo User
+            demo_res = await db.execute(select(User).where(User.email == "demo@nexarag.ai"))
+            demo_user = demo_res.scalar_one_or_none()
+            if not demo_user:
+                db.add(
+                    User(
+                        email="demo@nexarag.ai",
+                        password_hash=hash_password("password123"),
+                        role="USER",
+                        is_active=True,
+                    )
+                )
+            else:
+                demo_user.role = "USER"
+                demo_user.password_hash = hash_password("password123")
+                demo_user.is_active = True
+            await db.commit()
+            logger.info("Verified default admin and user accounts.")
     except Exception as e:
-        logger.error(f"Error during database initialization: {e}")
+        logger.error(f"Error during database initialization/seeding: {e}")
 
     yield
 
@@ -144,6 +192,10 @@ app.include_router(health_router, prefix="/api/v1")
 app.include_router(auth_router, prefix="/api/v1")
 app.include_router(documents_router, prefix="/api/v1")
 app.include_router(chat_router, prefix="/api/v1")
+app.include_router(memory_router, prefix="/api/v1")
+app.include_router(cache_router, prefix="/api/v1")
+app.include_router(analytics_router, prefix="/api/v1")
+app.include_router(admin_router, prefix="/api/v1")
 
 # Also mount health probes directly at root for standard k8s/Docker health checks
 app.include_router(health_router)

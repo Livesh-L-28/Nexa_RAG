@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     UPLOAD_DIR: Path = Path("data/uploads")
     MAX_UPLOAD_SIZE_MB: int = 25
     ALLOWED_EXTENSIONS: list[str] = [".pdf", ".txt", ".docx"]
+    DOCUMENTS_ADMIN_ONLY: bool = False
 
     CHUNK_SIZE: int = 512
     CHUNK_OVERLAP: int = 64
@@ -81,6 +82,16 @@ class Settings(BaseSettings):
     MAX_MAG_CONTEXT_TOKENS: int = 1000
     MAX_CONVERSATION_TOKENS: int = 1000
     MIN_CONTEXT_SCORE: float = 0.0
+
+    # Guardrails Settings (NeMo Guardrails)
+    GUARDRAILS_ENABLED: bool = True
+    GUARDRAILS_PROVIDER: str = "nemo"  # "nemo", "mock"
+    GUARDRAILS_CONFIG_PATH: Path = Path("app/guardrails/config")
+    GUARDRAILS_INPUT_ENABLED: bool = True
+    GUARDRAILS_RETRIEVAL_ENABLED: bool = True
+    GUARDRAILS_OUTPUT_ENABLED: bool = True
+    GUARDRAILS_FAIL_CLOSED: bool = True
+    GUARDRAILS_TIMEOUT_SECONDS: float = 5.0
 
     # CORS
     CORS_ORIGINS: list[str] = [

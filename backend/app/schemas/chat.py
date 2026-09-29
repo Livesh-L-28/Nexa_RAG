@@ -64,6 +64,12 @@ class RetrievalMetadata(BaseModel):
     estimated_input_tokens: int = 0
     dropped_contexts_count: int = 0
     dropped_reasons: dict[str, int] = Field(default_factory=dict)
+    guardrails_enabled: bool = True
+    guardrail_input_decision: str = "ALLOW"
+    guardrail_retrieval_decision: str = "ALLOW"
+    guardrail_output_decision: str = "ALLOW"
+    guardrail_latency_ms: float = 0.0
+    guardrail_violations: list[str] = Field(default_factory=list)
 
 
 class ChatResponse(BaseModel):

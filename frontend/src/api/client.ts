@@ -1,4 +1,19 @@
-import { ChatResponse, Citation, Document, RetrievalMetadata, User } from '../types';
+import {
+  AuditLog,
+  CacheEntry,
+  CacheStats,
+  ChatMessage,
+  ChatResponse,
+  ChatSession,
+  Citation,
+  Document,
+  MemoryRecord,
+  MemoryStats,
+  OverviewMetrics,
+  RetrievalMetadata,
+  SystemHealth,
+  User,
+} from '../types';
 
 const API_BASE = '/api/v1';
 
@@ -28,14 +43,23 @@ async function request<T>(endpoint: string, options: RequestInit = {}): Promise<
   if (!response.ok) {
     let errorMsg = `HTTP ${response.status}: ${response.statusText}`;
     try {
-      const errorJson = await response.json();
-      if (errorJson?.error?.message) {
-        errorMsg = errorJson.error.message;
-      } else if (errorJson?.detail) {
-        errorMsg = typeof errorJson.detail === 'string' ? errorJson.detail : JSON.stringify(errorJson.detail);
+      const text = await response.text();
+      try {
+        const errorJson = JSON.parse(text);
+        if (errorJson?.error?.message) {
+          errorMsg = errorJson.error.message;
+        } else if (errorJson?.detail) {
+          errorMsg = typeof errorJson.detail === 'string' ? errorJson.detail : JSON.stringify(errorJson.detail);
+        }
+      } catch {
+        if (text && (text.includes('ECONNREFUSED') || text.includes('proxy error') || response.status === 500)) {
+          errorMsg = 'Backend server is unreachable. Please ensure the NexaRAG API server is running on http://localhost:8000.';
+        } else if (text) {
+          errorMsg = text.slice(0, 150);
+        }
       }
     } catch {
-      // Ignore JSON parse errors
+      // Fallback
     }
     throw new Error(errorMsg);
   }
@@ -63,8 +87,8 @@ export const api = {
   },
 
   documents: {
-    list: async (): Promise<{ total: number; items: Document[] }> => {
-      return request('/documents');
+    list: async (skip = 0, limit = 50): Promise<{ total: number; items: Document[] }> => {
+      return request(`/documents?skip=${skip}&limit=${limit}`);
     },
     get: async (id: string): Promise<Document> => {
       return request(`/documents/${id}`);
@@ -82,7 +106,7 @@ export const api = {
         method: 'DELETE',
       });
     },
-    reprocess: async (id: string): Promise<any> => {
+    reprocess: async (id: string): Promise<{ document_id: string; status: string; chunk_count: number; message: string }> => {
       return request(`/documents/${id}/process`, {
         method: 'POST',
       });
@@ -90,16 +114,19 @@ export const api = {
   },
 
   chat: {
-    listSessions: async () => {
-      return request<any[]>('/chat/sessions');
+    listSessions: async (skip = 0, limit = 50): Promise<ChatSession[]> => {
+      return request(`/chat/sessions?skip=${skip}&limit=${limit}`);
     },
-    getSession: async (sessionId: string) => {
-      return request<any>(`/chat/sessions/${sessionId}`);
+    getSession: async (sessionId: string): Promise<ChatSession & { messages: ChatMessage[] }> => {
+      return request(`/chat/sessions/${sessionId}`);
     },
-    deleteSession: async (sessionId: string) => {
-      return request<{ message: string }>(`/chat/sessions/${sessionId}`, {
+    deleteSession: async (sessionId: string): Promise<{ message: string }> => {
+      return request(`/chat/sessions/${sessionId}`, {
         method: 'DELETE',
       });
+    },
+    getSessionLogs: async (sessionId: string): Promise<any[]> => {
+      return request(`/chat/sessions/${sessionId}/logs`);
     },
     query: async (query: string, sessionId?: string, documentIds?: string[]): Promise<ChatResponse> => {
       return request('/chat', {
@@ -116,7 +143,9 @@ export const api = {
         onToken?: (token: string) => void;
         onDone?: (sources: Citation[], metadata: RetrievalMetadata) => void;
         onError?: (error: string) => void;
-      }
+        onRedact?: (message: string) => void;
+      },
+      signal?: AbortSignal
     ) => {
       const token = getToken();
       const headers: Record<string, string> = {
@@ -129,6 +158,7 @@ export const api = {
       const response = await fetch(`${API_BASE}/chat/stream`, {
         method: 'POST',
         headers,
+        signal,
         body: JSON.stringify({
           query,
           session_id: sessionId,
@@ -168,6 +198,8 @@ export const api = {
               callbacks.onToken(data.content);
             } else if (data.type === 'done' && callbacks?.onDone) {
               callbacks.onDone(data.sources, data.metadata);
+            } else if (data.type === 'redact' && callbacks?.onRedact) {
+              callbacks.onRedact(data.message);
             } else if (data.type === 'error' && callbacks?.onError) {
               callbacks.onError(data.message);
             }
@@ -179,9 +211,88 @@ export const api = {
     },
   },
 
+  memory: {
+    list: async (type?: string, limit = 50): Promise<MemoryRecord[]> => {
+      const q = type ? `?memory_type=${encodeURIComponent(type)}&limit=${limit}` : `?limit=${limit}`;
+      return request(`/memory${q}`);
+    },
+    getStats: async (): Promise<MemoryStats> => {
+      return request('/memory/stats');
+    },
+    create: async (payload: { content: string; memory_type?: string; importance?: number }): Promise<MemoryRecord> => {
+      return request('/memory', {
+        method: 'POST',
+        body: JSON.stringify(payload),
+      });
+    },
+    delete: async (memoryId: string): Promise<{ message: string }> => {
+      return request(`/memory/${memoryId}`, {
+        method: 'DELETE',
+      });
+    },
+    clearAll: async (): Promise<{ message: string }> => {
+      return request('/memory', {
+        method: 'DELETE',
+      });
+    },
+  },
+
+  cache: {
+    getInfo: async (namespace?: string): Promise<{ stats: CacheStats; entries_count: number; entries: CacheEntry[] }> => {
+      const q = namespace ? `?namespace=${encodeURIComponent(namespace)}` : '';
+      return request(`/cache${q}`);
+    },
+    invalidate: async (key: string): Promise<{ message: string }> => {
+      return request('/cache/invalidate', {
+        method: 'POST',
+        body: JSON.stringify({ key }),
+      });
+    },
+    preload: async (data: { namespace: string; identifier: string; content: string; ttl_seconds?: number }): Promise<any> => {
+      return request('/cache/preload', {
+        method: 'POST',
+        body: JSON.stringify(data),
+      });
+    },
+    clear: async (): Promise<{ message: string }> => {
+      return request('/cache/clear', {
+        method: 'POST',
+      });
+    },
+  },
+
+  analytics: {
+    getOverview: async (): Promise<OverviewMetrics> => {
+      return request('/analytics/overview');
+    },
+    getAuditLogs: async (skip = 0, limit = 50, method?: string): Promise<{ total: number; items: AuditLog[] }> => {
+      const q = method ? `?skip=${skip}&limit=${limit}&method=${encodeURIComponent(method)}` : `?skip=${skip}&limit=${limit}`;
+      return request(`/analytics/audit-logs${q}`);
+    },
+  },
+
+  admin: {
+    listUsers: async (skip = 0, limit = 50): Promise<{ total: number; items: User[] }> => {
+      return request(`/admin/users?skip=${skip}&limit=${limit}`);
+    },
+    updateUser: async (userId: string, data: { role?: string; is_active?: boolean }): Promise<any> => {
+      return request(`/admin/users/${userId}`, {
+        method: 'PATCH',
+        body: JSON.stringify(data),
+      });
+    },
+    getSystemConfig: async (): Promise<Record<string, any>> => {
+      return request('/admin/system-config');
+    },
+  },
+
   health: {
-    check: async () => {
+    checkReady: async (): Promise<SystemHealth> => {
       const res = await fetch('/health/ready');
+      return res.json();
+    },
+    checkLive: async (): Promise<{ status: string; app: string; environment: string; timestamp: string }> => {
+      const res = await fetch('/health');
       return res.json();
     },
   },

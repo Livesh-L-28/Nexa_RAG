@@ -172,3 +172,11 @@ class CAGContextProvider(ContextProvider):
                 cached_contexts.append(ctx)
 
         return cached_contexts
+
+
+_global_cag_manager = CAGManager()
+
+
+def get_cag_manager() -> CAGManager:
+    """Return the global CAGManager singleton instance."""
+    return _global_cag_manager

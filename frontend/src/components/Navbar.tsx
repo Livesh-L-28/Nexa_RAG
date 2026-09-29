@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Sparkles, LayoutDashboard, FileText, MessageSquare, LogOut, ShieldCheck, Activity } from 'lucide-react';
+import { Sparkles, LayoutDashboard, FileText, MessageSquare, LogOut, ShieldCheck, Activity, Shield, User as UserIcon } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import { api } from '../api/client';
 
@@ -13,8 +13,8 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onTabChange }) => {
   const [systemReady, setSystemReady] = useState<boolean>(true);
 
   useEffect(() => {
-    api.health.check()
-      .then((res) => setSystemReady(res.status === 'ready'))
+    api.health.checkReady()
+      .then((res: any) => setSystemReady(res.status === 'ready'))
       .catch(() => setSystemReady(false));
   }, []);
 
@@ -74,7 +74,11 @@ export const Navbar: React.FC<NavbarProps> = ({ currentTab, onTabChange }) => {
                 {user.email.split('@')[0]}
               </div>
               <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
-                <span className={`badge ${user.role === 'ADMIN' ? 'badge-info' : 'badge-success'}`}>
+                <span
+                  className={`badge ${user.role === 'ADMIN' ? 'badge-info' : 'badge-success'}`}
+                  style={{ display: 'inline-flex', alignItems: 'center', gap: '0.25rem', padding: '0.2rem 0.5rem' }}
+                >
+                  {user.role === 'ADMIN' ? <Shield size={11} /> : <UserIcon size={11} />}
                   {user.role}
                 </span>
               </div>

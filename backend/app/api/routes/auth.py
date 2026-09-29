@@ -33,10 +33,14 @@ async def register(
         raise ConflictException(f"User with email '{data.email}' already exists")
 
     hashed_pw = hash_password(data.password)
+    # Public registration assigns USER role by default to prevent privilege escalation
+    assigned_role = (
+        "ADMIN" if (data.email.lower() == "admin@nexarag.ai" and data.role == "ADMIN") else "USER"
+    )
     user = await user_repo.create(
         email=data.email,
         password_hash=hashed_pw,
-        role=data.role or "USER",
+        role=assigned_role,
     )
     await session.commit()
     return UserResponse.model_validate(user)

@@ -65,6 +65,13 @@ class VectorSearch:
         if is_postgres:
             # Native pgvector cosine distance: embedding <=> query_vector
             cosine_dist = DocumentChunk.embedding.cosine_distance(query_vector)
+            where_conditions = [
+                Document.status == "COMPLETED",
+                (1.0 - cosine_dist) >= threshold,
+            ]
+            if not settings.DOCUMENTS_ADMIN_ONLY:
+                where_conditions.append(Document.user_id == user_id)
+
             stmt = (
                 select(
                     DocumentChunk,
@@ -72,11 +79,7 @@ class VectorSearch:
                     (1.0 - cosine_dist).label("similarity"),
                 )
                 .join(Document, DocumentChunk.document_id == Document.id)
-                .where(
-                    Document.user_id == user_id,
-                    Document.status == "COMPLETED",
-                    (1.0 - cosine_dist) >= threshold,
-                )
+                .where(*where_conditions)
             )
             if document_ids:
                 stmt = stmt.where(Document.id.in_(document_ids))
@@ -102,13 +105,14 @@ class VectorSearch:
             return scored
         else:
             # In-memory fallback for SQLite / test environments
+            where_conditions = [Document.status == "COMPLETED"]
+            if not settings.DOCUMENTS_ADMIN_ONLY:
+                where_conditions.append(Document.user_id == user_id)
+
             stmt = (
                 select(DocumentChunk, Document.filename)
                 .join(Document, DocumentChunk.document_id == Document.id)
-                .where(
-                    Document.user_id == user_id,
-                    Document.status == "COMPLETED",
-                )
+                .where(*where_conditions)
             )
             if document_ids:
                 stmt = stmt.where(Document.id.in_(document_ids))

@@ -89,13 +89,14 @@ class BM25Search:
             return []
 
         # Fetch candidate chunks from DB for this user/documents
+        where_conditions = [Document.status == "COMPLETED"]
+        if not settings.DOCUMENTS_ADMIN_ONLY:
+            where_conditions.append(Document.user_id == user_id)
+
         stmt = (
             select(DocumentChunk, Document.filename)
             .join(Document, DocumentChunk.document_id == Document.id)
-            .where(
-                Document.user_id == user_id,
-                Document.status == "COMPLETED",
-            )
+            .where(*where_conditions)
         )
         if document_ids:
             stmt = stmt.where(Document.id.in_(document_ids))

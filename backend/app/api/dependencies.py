@@ -13,6 +13,7 @@ from app.core.security import decode_access_token
 from app.database.connection import get_session
 from app.database.models import User, UserRole
 from app.database.repositories.user_repo import UserRepository
+from app.guardrails.service import GuardrailService, get_guardrail_service
 from app.rag.pipeline import RAGPipeline
 
 settings = get_settings()
@@ -28,11 +29,16 @@ async def get_db() -> AsyncGenerator[AsyncSession, None]:
         yield session
 
 
-def get_rag_pipeline() -> RAGPipeline:
+def get_rag_pipeline(
+    guardrails: GuardrailService = Depends(get_guardrail_service),
+) -> RAGPipeline:
     """Dependency for obtaining the singleton RAGPipeline instance."""
     global _rag_pipeline_instance
     if _rag_pipeline_instance is None:
-        _rag_pipeline_instance = RAGPipeline(routing_enabled=True)
+        _rag_pipeline_instance = RAGPipeline(
+            routing_enabled=True,
+            guardrail_service=guardrails,
+        )
     return _rag_pipeline_instance
 
 

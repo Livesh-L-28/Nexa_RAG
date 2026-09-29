@@ -1,361 +1,355 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
-  UploadCloud,
   FileText,
-  Trash2,
+  Search,
+  Upload,
   RefreshCw,
+  Trash2,
   Eye,
-  AlertCircle,
   CheckCircle2,
-  File,
-  X,
-  Database,
+  AlertCircle,
+  Clock,
+  Filter,
 } from 'lucide-react';
 import { api } from '../api/client';
-import { Chunk, Document } from '../types';
+import { Document } from '../types';
+import { ChunkInspectorModal } from '../components/ChunkInspectorModal';
+import { UploadDrawer } from '../components/UploadDrawer';
 
 export const DocumentsPage: React.FC = () => {
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
-  const [uploading, setUploading] = useState<boolean>(false);
-  const [error, setError] = useState<string | null>(null);
-  const [success, setSuccess] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [statusFilter, setStatusFilter] = useState<string>('ALL');
 
-  // Chunk Modal State
-  const [selectedDoc, setSelectedDoc] = useState<Document | null>(null);
-  const [loadingChunks, setLoadingChunks] = useState<boolean>(false);
-  const [chunks, setChunks] = useState<Chunk[]>([]);
+  // Modal / Drawer states
+  const [inspectDocId, setInspectDocId] = useState<string | null>(null);
+  const [isUploadOpen, setIsUploadOpen] = useState(false);
+  const [actionMessage, setActionMessage] = useState<{ text: string; type: 'success' | 'error' } | null>(null);
 
-  const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const loadDocuments = async () => {
+  const fetchDocuments = async () => {
+    setLoading(true);
     try {
-      setLoading(true);
-      const res = await api.documents.list();
+      const res = await api.documents.list(0, 100);
       setDocuments(res.items || []);
     } catch (err: any) {
-      setError(err.message || 'Failed to fetch documents');
+      setActionMessage({ text: err.message || 'Failed to load documents.', type: 'error' });
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadDocuments();
+    fetchDocuments();
   }, []);
 
-  const handleFileUpload = async (file: File) => {
-    setError(null);
-    setSuccess(null);
-    setUploading(true);
+  const handleDelete = async (doc: Document) => {
+    if (!window.confirm(`Are you sure you want to delete "${doc.filename}" and all its vector embeddings?`)) {
+      return;
+    }
 
     try {
-      const doc = await api.documents.upload(file);
-      setSuccess(`File "${file.name}" uploaded and processed (${doc.chunk_count} chunks generated).`);
-      await loadDocuments();
+      await api.documents.delete(doc.id);
+      setDocuments((prev) => prev.filter((d) => d.id !== doc.id));
+      setActionMessage({ text: `Document "${doc.filename}" and its chunks were deleted.`, type: 'success' });
     } catch (err: any) {
-      setError(err.message || 'Failed to upload document');
-    } finally {
-      setUploading(false);
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      setActionMessage({ text: err.message || 'Failed to delete document.', type: 'error' });
     }
   };
 
-  const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
-    e.preventDefault();
-    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-      handleFileUpload(e.dataTransfer.files[0]);
-    }
-  };
-
-  const handleDelete = async (id: string, name: string) => {
-    if (!window.confirm(`Are you sure you want to delete "${name}"?`)) return;
+  const handleReprocess = async (doc: Document) => {
     try {
-      await api.documents.delete(id);
-      setSuccess(`Document "${name}" deleted.`);
-      await loadDocuments();
+      setActionMessage({ text: `Reprocessing "${doc.filename}"...`, type: 'success' });
+      await api.documents.reprocess(doc.id);
+      fetchDocuments();
+      setActionMessage({ text: `Document "${doc.filename}" successfully reprocessed.`, type: 'success' });
     } catch (err: any) {
-      setError(err.message || 'Failed to delete document');
+      setActionMessage({ text: err.message || 'Reprocessing failed.', type: 'error' });
     }
   };
 
-  const handleReprocess = async (id: string) => {
-    try {
-      setError(null);
-      const res = await api.documents.reprocess(id);
-      setSuccess(res.message);
-      await loadDocuments();
-    } catch (err: any) {
-      setError(err.message || 'Failed to reprocess document');
-    }
-  };
-
-  const handleViewChunks = async (doc: Document) => {
-    setSelectedDoc(doc);
-    setLoadingChunks(true);
-    try {
-      const detail = await api.documents.get(doc.id);
-      setChunks(detail.chunks || []);
-    } catch (err: any) {
-      setError(err.message || 'Failed to load document chunks');
-    } finally {
-      setLoadingChunks(false);
-    }
-  };
+  const filteredDocs = documents.filter((doc) => {
+    const matchesQuery =
+      doc.filename.toLowerCase().includes(searchQuery.toLowerCase()) ||
+      doc.file_type.toLowerCase().includes(searchQuery.toLowerCase());
+    const matchesStatus = statusFilter === 'ALL' || doc.status === statusFilter;
+    return matchesQuery && matchesStatus;
+  });
 
   const formatFileSize = (bytes: number) => {
     if (bytes < 1024) return `${bytes} B`;
     if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-    return `${(bytes / (1024 * 1024)).toFixed(2)} MB`;
+    return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+  };
+
+  const formatDate = (isoString: string) => {
+    try {
+      const d = new Date(isoString);
+      return d.toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return isoString;
+    }
   };
 
   return (
-    <div className="animate-fade-in" style={{ padding: '2rem', maxWidth: 1200, margin: '0 auto', width: '100%' }}>
-      <div style={{ marginBottom: '2rem' }}>
-        <h1>Document <span className="gradient-text">Management</span></h1>
-        <p className="text-secondary" style={{ marginTop: '0.4rem' }}>
-          Upload PDF, DOCX, and TXT files for automated page extraction, chunking, and pgvector embeddings.
-        </p>
-      </div>
-
-      {error && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.6rem',
-          padding: '0.85rem 1rem',
-          background: 'rgba(244, 63, 94, 0.15)',
-          border: '1px solid rgba(244, 63, 94, 0.3)',
-          borderRadius: 'var(--radius-md)',
-          color: '#fda4af',
-          marginBottom: '1.5rem',
-        }}>
-          <AlertCircle size={18} />
-          <span>{error}</span>
-        </div>
-      )}
-
-      {success && (
-        <div style={{
-          display: 'flex',
-          alignItems: 'center',
-          gap: '0.6rem',
-          padding: '0.85rem 1rem',
-          background: 'rgba(16, 185, 129, 0.15)',
-          border: '1px solid rgba(16, 185, 129, 0.3)',
-          borderRadius: 'var(--radius-md)',
-          color: '#6ee7b7',
-          marginBottom: '1.5rem',
-        }}>
-          <CheckCircle2 size={18} />
-          <span>{success}</span>
-        </div>
-      )}
-
-      {/* Drag and Drop Zone */}
+    <div style={{ padding: '24px 32px', maxWidth: 1400, margin: '0 auto', width: '100%' }}>
+      {/* Title & Action Row */}
       <div
-        className="glass-panel"
         style={{
-          padding: '2.5rem',
-          textAlign: 'center',
-          border: '2px dashed var(--border-glass)',
-          borderRadius: 'var(--radius-lg)',
-          marginBottom: '2.5rem',
-          cursor: 'pointer',
-          background: 'rgba(15, 21, 35, 0.4)',
-        }}
-        onDragOver={(e) => e.preventDefault()}
-        onDrop={handleDrop}
-        onClick={() => fileInputRef.current?.click()}
-      >
-        <input
-          type="file"
-          ref={fileInputRef}
-          style={{ display: 'none' }}
-          accept=".pdf,.docx,.txt"
-          onChange={(e) => {
-            if (e.target.files && e.target.files[0]) {
-              handleFileUpload(e.target.files[0]);
-            }
-          }}
-        />
-        <div style={{
-          display: 'inline-flex',
+          display: 'flex',
           alignItems: 'center',
-          justifyContent: 'center',
-          width: 56,
-          height: 56,
-          borderRadius: 'var(--radius-full)',
-          background: 'rgba(99, 102, 241, 0.15)',
-          color: '#818cf8',
-          marginBottom: '1rem',
-        }}>
-          <UploadCloud size={28} />
+          justifyContent: 'space-between',
+          marginBottom: 20,
+        }}
+      >
+        <div>
+          <h1 style={{ fontSize: 20, fontWeight: 600, color: 'var(--text-primary)' }}>
+            Document Intelligence
+          </h1>
+          <p style={{ fontSize: 13, color: 'var(--text-secondary)', marginTop: 2 }}>
+            Manage heterogeneous documents, inspect sentence chunks, and audit dense pgvector indexing.
+          </p>
         </div>
-        <h3 style={{ fontSize: '1.25rem', marginBottom: '0.35rem' }}>
-          {uploading ? 'Ingesting Document & Generating Embeddings...' : 'Click or Drag files here to ingest'}
-        </h3>
-        <p className="text-muted" style={{ fontSize: '0.88rem' }}>
-          Supports PDF (with page detection), Microsoft Word (.docx), and plain text (.txt) up to 20MB
-        </p>
-      </div>
 
-      {/* Documents Table */}
-      <div className="glass-panel" style={{ padding: '1.5rem' }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem' }}>
-          <h3>Indexed Documents ({documents.length})</h3>
-          <button className="btn btn-secondary btn-sm" onClick={loadDocuments} disabled={loading}>
-            <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
-            Refresh
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          <button
+            className="btn btn-secondary btn-sm"
+            onClick={fetchDocuments}
+            disabled={loading}
+            style={{ fontSize: 12 }}
+          >
+            <RefreshCw size={13} className={loading ? 'spin' : ''} />
+            <span>Refresh</span>
+          </button>
+          <button
+            className="btn btn-primary btn-sm"
+            onClick={() => setIsUploadOpen(true)}
+            style={{ fontSize: 12 }}
+          >
+            <Upload size={13} />
+            <span>Upload Document</span>
           </button>
         </div>
+      </div>
 
-        {documents.length === 0 ? (
-          <div style={{ textAlign: 'center', padding: '3rem', color: 'var(--text-muted)' }}>
-            No documents found. Ingest your first document using the upload zone above.
+      {/* Alert banner if message present */}
+      {actionMessage && (
+        <div
+          style={{
+            marginBottom: 16,
+            padding: '10px 14px',
+            borderRadius: 'var(--radius-sm)',
+            fontSize: 12.5,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'space-between',
+            backgroundColor:
+              actionMessage.type === 'success' ? 'var(--status-success-bg)' : 'var(--status-error-bg)',
+            color: actionMessage.type === 'success' ? 'var(--status-success)' : 'var(--status-error)',
+            border: `1px solid ${
+              actionMessage.type === 'success' ? 'var(--status-success-border)' : 'var(--status-error-border)'
+            }`,
+          }}
+        >
+          <span>{actionMessage.text}</span>
+          <button
+            className="btn btn-ghost btn-xs"
+            onClick={() => setActionMessage(null)}
+            style={{ color: 'inherit' }}
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
+
+      {/* Filter and Search Bar */}
+      <div
+        style={{
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: 12,
+          marginBottom: 16,
+        }}
+      >
+        <div style={{ position: 'relative', width: 320 }}>
+          <Search
+            size={14}
+            style={{ position: 'absolute', left: 10, top: 10, color: 'var(--text-muted)' }}
+          />
+          <input
+            className="input"
+            placeholder="Search by filename or format..."
+            value={searchQuery}
+            onChange={(e) => setSearchQuery(e.target.value)}
+            style={{ paddingLeft: 30, height: 34, fontSize: 12.5 }}
+          />
+        </div>
+
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>Status:</span>
+          {['ALL', 'COMPLETED', 'PROCESSING', 'FAILED'].map((st) => (
+            <button
+              key={st}
+              className={`btn btn-xs ${statusFilter === st ? 'btn-secondary' : 'btn-ghost'}`}
+              onClick={() => setStatusFilter(st)}
+              style={{
+                fontSize: 11.5,
+                fontWeight: statusFilter === st ? 600 : 400,
+                backgroundColor: statusFilter === st ? 'var(--bg-surface-active)' : 'transparent',
+              }}
+            >
+              {st}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* Document Table */}
+      <div className="table-container">
+        {loading && documents.length === 0 ? (
+          <div style={{ padding: 40, textAlign: 'center', color: 'var(--text-tertiary)' }}>
+            Loading document repository...
+          </div>
+        ) : filteredDocs.length === 0 ? (
+          <div className="empty-state" style={{ margin: 20 }}>
+            <FileText size={32} className="empty-state-icon" />
+            <div className="empty-state-title">No documents found</div>
+            <div className="empty-state-text">
+              {searchQuery || statusFilter !== 'ALL'
+                ? 'No documents match your current search and filter criteria.'
+                : 'Upload your first PDF, DOCX, or TXT document to build your knowledge base.'}
+            </div>
+            <button className="btn btn-primary btn-sm" onClick={() => setIsUploadOpen(true)}>
+              <Upload size={13} />
+              <span>Upload Document</span>
+            </button>
           </div>
         ) : (
-          <div style={{ overflowX: 'auto' }}>
-            <table style={{ width: '100%', borderCollapse: 'collapse', textAlign: 'left', fontSize: '0.9rem' }}>
-              <thead>
-                <tr style={{ borderBottom: '1px solid var(--border-subtle)', color: 'var(--text-muted)' }}>
-                  <th style={{ padding: '0.75rem 1rem' }}>Document</th>
-                  <th style={{ padding: '0.75rem 1rem' }}>Size</th>
-                  <th style={{ padding: '0.75rem 1rem' }}>Status</th>
-                  <th style={{ padding: '0.75rem 1rem' }}>Chunks</th>
-                  <th style={{ padding: '0.75rem 1rem' }}>Uploaded</th>
-                  <th style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>Actions</th>
+          <table className="data-table">
+            <thead>
+              <tr>
+                <th>Document</th>
+                <th>Type</th>
+                <th>Size</th>
+                <th>Chunks</th>
+                <th>Status</th>
+                <th>Created</th>
+                <th style={{ textAlign: 'right' }}>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredDocs.map((doc) => (
+                <tr key={doc.id}>
+                  <td style={{ fontWeight: 500, color: 'var(--text-primary)' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                      <FileText size={15} style={{ color: 'var(--accent-primary)', flexShrink: 0 }} />
+                      <span
+                        style={{
+                          cursor: 'pointer',
+                          maxWidth: 320,
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                        }}
+                        onClick={() => setInspectDocId(doc.id)}
+                        title="Click to inspect chunks"
+                      >
+                        {doc.filename}
+                      </span>
+                    </div>
+                  </td>
+                  <td>
+                    <span className="badge badge-neutral" style={{ textTransform: 'uppercase' }}>
+                      {doc.file_type}
+                    </span>
+                  </td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12 }}>
+                    {formatFileSize(doc.file_size)}
+                  </td>
+                  <td style={{ fontFamily: 'var(--font-mono)', fontSize: 12, fontWeight: 600 }}>
+                    {doc.chunk_count}
+                  </td>
+                  <td>
+                    {doc.status === 'COMPLETED' && (
+                      <span className="badge badge-success">
+                        <CheckCircle2 size={11} />
+                        <span>Indexed</span>
+                      </span>
+                    )}
+                    {doc.status === 'PROCESSING' && (
+                      <span className="badge badge-info">
+                        <Clock size={11} className="spin" />
+                        <span>Processing</span>
+                      </span>
+                    )}
+                    {doc.status === 'PENDING' && (
+                      <span className="badge badge-warning">
+                        <Clock size={11} />
+                        <span>Pending</span>
+                      </span>
+                    )}
+                    {doc.status === 'FAILED' && (
+                      <span className="badge badge-error" title={doc.error_message || 'Processing failed'}>
+                        <AlertCircle size={11} />
+                        <span>Failed</span>
+                      </span>
+                    )}
+                  </td>
+                  <td style={{ fontSize: 12, color: 'var(--text-tertiary)' }}>
+                    {formatDate(doc.created_at)}
+                  </td>
+                  <td>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6 }}>
+                      <button
+                        className="btn btn-secondary btn-xs"
+                        onClick={() => setInspectDocId(doc.id)}
+                        title="Inspect Chunks & Vectors"
+                      >
+                        <Eye size={12} />
+                        <span>Inspect</span>
+                      </button>
+                      <button
+                        className="btn btn-ghost btn-xs"
+                        onClick={() => handleReprocess(doc)}
+                        title="Re-run embedding pipeline"
+                      >
+                        <RefreshCw size={12} />
+                      </button>
+                      <button
+                        className="btn btn-danger btn-xs btn-icon"
+                        onClick={() => handleDelete(doc)}
+                        title="Delete document and chunks"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {documents.map((doc) => (
-                  <tr key={doc.id} style={{ borderBottom: '1px solid var(--border-subtle)' }}>
-                    <td style={{ padding: '0.75rem 1rem' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.6rem' }}>
-                        <FileText size={18} style={{ color: '#818cf8' }} />
-                        <span style={{ fontWeight: 600 }}>{doc.filename}</span>
-                      </div>
-                    </td>
-                    <td style={{ padding: '0.75rem 1rem', color: 'var(--text-secondary)' }}>
-                      {formatFileSize(doc.file_size)}
-                    </td>
-                    <td style={{ padding: '0.75rem 1rem' }}>
-                      <span className={`badge ${doc.status === 'COMPLETED' ? 'badge-success' : doc.status === 'FAILED' ? 'badge-danger' : 'badge-warning'}`}>
-                        {doc.status}
-                      </span>
-                    </td>
-                    <td style={{ padding: '0.75rem 1rem' }}>
-                      <span className="metric-pill">
-                        <Database size={11} />
-                        <strong>{doc.chunk_count}</strong>
-                      </span>
-                    </td>
-                    <td style={{ padding: '0.75rem 1rem', color: 'var(--text-muted)' }}>
-                      {new Date(doc.created_at).toLocaleDateString()}
-                    </td>
-                    <td style={{ padding: '0.75rem 1rem', textAlign: 'right' }}>
-                      <div style={{ display: 'inline-flex', gap: '0.4rem' }}>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => handleViewChunks(doc)}
-                          title="Inspect Extracted Chunks"
-                        >
-                          <Eye size={14} />
-                        </button>
-                        <button
-                          className="btn btn-secondary btn-sm"
-                          onClick={() => handleReprocess(doc.id)}
-                          title="Re-run Chunking & Embeddings"
-                        >
-                          <RefreshCw size={14} />
-                        </button>
-                        <button
-                          className="btn btn-danger btn-sm"
-                          onClick={() => handleDelete(doc.id, doc.filename)}
-                          title="Delete Document"
-                        >
-                          <Trash2 size={14} />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </table>
         )}
       </div>
 
-      {/* Chunks Inspector Modal */}
-      {selectedDoc && (
-        <div style={{
-          position: 'fixed',
-          inset: 0,
-          background: 'rgba(0, 0, 0, 0.75)',
-          backdropFilter: 'blur(8px)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          padding: '2rem',
-          zIndex: 100,
-        }}>
-          <div className="glass-panel" style={{
-            maxWidth: 800,
-            width: '100%',
-            maxHeight: '85vh',
-            display: 'flex',
-            flexDirection: 'column',
-            padding: '1.75rem',
-            position: 'relative',
-          }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.25rem', borderBottom: '1px solid var(--border-subtle)', paddingBottom: '0.75rem' }}>
-              <div>
-                <h3 style={{ fontSize: '1.2rem' }}>Chunk Inspector: {selectedDoc.filename}</h3>
-                <span className="text-muted" style={{ fontSize: '0.8rem' }}>
-                  {chunks.length} chunks indexed with 384-dimensional dense vectors
-                </span>
-              </div>
-              <button
-                className="btn btn-secondary btn-sm"
-                onClick={() => setSelectedDoc(null)}
-                style={{ padding: '0.4rem' }}
-              >
-                <X size={18} />
-              </button>
-            </div>
+      {/* Modals & Drawers */}
+      <ChunkInspectorModal
+        documentId={inspectDocId}
+        onClose={() => setInspectDocId(null)}
+        onDocumentReprocessed={fetchDocuments}
+      />
 
-            <div style={{ overflowY: 'auto', flex: 1, display: 'flex', flexDirection: 'column', gap: '1rem', paddingRight: '0.5rem' }}>
-              {loadingChunks ? (
-                <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                  Loading chunk data...
-                </div>
-              ) : chunks.length === 0 ? (
-                <div style={{ textAlign: 'center', padding: '2rem', color: 'var(--text-muted)' }}>
-                  No chunks found for this document.
-                </div>
-              ) : (
-                chunks.map((chunk) => (
-                  <div key={chunk.id} className="glass-card" style={{ padding: '1rem' }}>
-                    <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem', fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-                      <span style={{ fontWeight: 600, color: '#818cf8' }}>Chunk #{chunk.chunk_index}</span>
-                      {chunk.page_number && (
-                        <span className="badge badge-info" style={{ textTransform: 'none' }}>
-                          Page {chunk.page_number}
-                        </span>
-                      )}
-                    </div>
-                    <p style={{ fontSize: '0.88rem', color: 'var(--text-primary)', whiteSpace: 'pre-wrap', lineHeight: 1.5 }}>
-                      {chunk.content}
-                    </p>
-                  </div>
-                ))
-              )}
-            </div>
-          </div>
-        </div>
-      )}
+      <UploadDrawer
+        isOpen={isUploadOpen}
+        onClose={() => setIsUploadOpen(false)}
+        onUploadSuccess={() => fetchDocuments()}
+      />
     </div>
   );
 };

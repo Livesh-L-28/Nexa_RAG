@@ -43,6 +43,12 @@ async def upload_document(
     session: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ) -> DocumentResponse:
+    # 0. Role check: Enforce ADMIN-only document uploads if policy active
+    if settings.DOCUMENTS_ADMIN_ONLY and current_user.role != UserRole.ADMIN:
+        raise AuthorizationException(
+            "Only administrators have permission to upload documents to the knowledge base."
+        )
+
     # 1. Validate file extension
     filename = Path(file.filename or "unknown").name  # Sanitize against path traversal
     ext = os.path.splitext(filename)[1].lower()
@@ -109,7 +115,7 @@ async def list_documents(
     current_user: User = Depends(get_current_user),
 ) -> DocumentListResponse:
     doc_repo = DocumentRepository(session)
-    if current_user.role == UserRole.ADMIN:
+    if current_user.role == UserRole.ADMIN or settings.DOCUMENTS_ADMIN_ONLY:
         docs = await doc_repo.list_all(skip=skip, limit=limit)
     else:
         docs = await doc_repo.list_by_user(user_id=current_user.id, skip=skip, limit=limit)
@@ -135,7 +141,11 @@ async def get_document(
     if not doc:
         raise DocumentNotFoundError(f"Document with ID {document_id} not found")
 
-    if doc.user_id != current_user.id and current_user.role != UserRole.ADMIN:
+    if (
+        not settings.DOCUMENTS_ADMIN_ONLY
+        and doc.user_id != current_user.id
+        and current_user.role != UserRole.ADMIN
+    ):
         raise AuthorizationException("You do not have permission to view this document")
 
     chunks = await doc_repo.get_chunks_by_document(document_id)
@@ -179,6 +189,11 @@ async def delete_document(
     if not doc:
         raise DocumentNotFoundError(f"Document with ID {document_id} not found")
 
+    if settings.DOCUMENTS_ADMIN_ONLY and current_user.role != UserRole.ADMIN:
+        raise AuthorizationException(
+            "Only administrators have permission to delete documents from the knowledge base."
+        )
+
     if doc.user_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise AuthorizationException("You do not have permission to delete this document")
 
@@ -209,6 +224,9 @@ async def reprocess_document(
     doc = await doc_repo.get_by_id(document_id)
     if not doc:
         raise DocumentNotFoundError(f"Document with ID {document_id} not found")
+
+    if settings.DOCUMENTS_ADMIN_ONLY and current_user.role != UserRole.ADMIN:
+        raise AuthorizationException("Only administrators have permission to reprocess documents.")
 
     if doc.user_id != current_user.id and current_user.role != UserRole.ADMIN:
         raise AuthorizationException("You do not have permission to process this document")

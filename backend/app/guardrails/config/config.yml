@@ -1,0 +1,21 @@
+# Guardrails Configuration
+models:
+  - type: main
+    engine: mock
+
+instructions:
+  - type: general
+    content: |
+      Below is a conversation between a user and an AI document assistant.
+      The assistant is factual, polite, secure, and answers questions using provided context only.
+
+rails:
+  input:
+    flows:
+      - check jailbreak
+      - check prompt injection
+      - check sensitive info
+  output:
+    flows:
+      - check system prompt leakage
+      - check sensitive data leakage

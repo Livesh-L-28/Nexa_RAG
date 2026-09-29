@@ -7,12 +7,13 @@ from collections.abc import AsyncIterator
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.cag import CAGContextProvider, CAGManager
+from app.cag import CAGContextProvider, get_cag_manager
 from app.core.config import get_settings
 from app.core.logging import logger
 from app.database.repositories.chat_repo import ChatRepository
 from app.database.repositories.log_repo import RetrievalLogRepository
 from app.embeddings.service import EmbeddingService
+from app.guardrails.service import GuardrailService, get_guardrail_service
 from app.llm.base import BaseLLM
 from app.llm.exceptions import sanitize_error_message
 from app.llm.factory import get_llm
@@ -60,6 +61,7 @@ class RAGPipeline:
         mag_enabled: bool = True,
         orchestrator: ContextOrchestrator | None = None,
         routing_enabled: bool = False,
+        guardrail_service: GuardrailService | None = None,
     ):
         self.embedding_service = embedding_service or EmbeddingService()
         self.llm = llm or get_llm()
@@ -68,7 +70,7 @@ class RAGPipeline:
         self.fusion = context_fusion or DefaultContextFusion()
         self.cag_enabled = cag_enabled
         self.cag_provider = cag_provider or (
-            CAGContextProvider(CAGManager()) if cag_enabled else None
+            CAGContextProvider(get_cag_manager()) if cag_enabled else None
         )
         self.mag_enabled = mag_enabled
         self.mag_provider = mag_provider or (
@@ -76,6 +78,7 @@ class RAGPipeline:
         )
         self.orchestrator = orchestrator or ContextOrchestrator()
         self.routing_enabled = routing_enabled
+        self.guardrails = guardrail_service or get_guardrail_service()
 
     async def _retrieve_and_rerank(
         self,
@@ -175,6 +178,77 @@ class RAGPipeline:
                 data={"user_id": str(user_id)},
             )
         )
+
+        # 1. Input Guardrail Evaluation
+        input_guard_timer = Timer()
+        input_guard_res = await self.guardrails.input_guard.evaluate(
+            query=query,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=req_id,
+        )
+        input_guard_latency_ms = input_guard_timer.stop()
+        metrics_rec.increment("guardrail_checks_total")
+        metrics_rec.observe("guardrail_latency", input_guard_latency_ms)
+
+        obs_logger.log_stage_completed(
+            EventType.INPUT_GUARDRAIL_COMPLETED,
+            request_id=req_id,
+            session_id=session_id,
+            decision=input_guard_res.decision.value,
+            latency_ms=input_guard_latency_ms,
+        )
+
+        if input_guard_res.is_blocked:
+            metrics_rec.increment("guardrail_blocked_total")
+            metrics_rec.increment("guardrail_input_violations_total")
+            obs_logger.log_stage_completed(
+                EventType.GUARDRAIL_BLOCKED,
+                request_id=req_id,
+                session_id=session_id,
+                stage="INPUT",
+                reason=input_guard_res.metadata.reason,
+            )
+            blocked_msg = (
+                "I cannot fulfill this request because it violates application safety guidelines."
+            )
+            await chat_repo.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=blocked_msg,
+                sources=[],
+            )
+            total_lat = total_timer.stop()
+            meta = RetrievalMetadata(
+                retrieval_method="none",
+                candidates_count=0,
+                top_k=0,
+                reranking_enabled=False,
+                retrieval_latency_ms=0.0,
+                reranking_latency_ms=0.0,
+                llm_latency_ms=0.0,
+                total_latency_ms=round(total_lat, 2),
+                guardrails_enabled=True,
+                guardrail_input_decision="BLOCK",
+                guardrail_latency_ms=round(input_guard_latency_ms, 2),
+                guardrail_violations=[v.reason for v in input_guard_res.violations],
+                request_id=req_id,
+            )
+            return ChatResponse(
+                session_id=session_id,
+                query=query,
+                answer=blocked_msg,
+                sources=[],
+                retrieved_chunks=[],
+                metadata=meta,
+                request_id=req_id,
+            )
+
+        if input_guard_res.is_sanitized:
+            metrics_rec.increment("guardrail_sanitized_total")
+            query = input_guard_res.safe_text
+        else:
+            metrics_rec.increment("guardrail_allowed_total")
 
         # Query preprocessing & conversational expansion
         query_timer = Timer()
@@ -312,6 +386,86 @@ class RAGPipeline:
             latency_ms=fusion_latency_ms,
         )
 
+        # 2. Retrieval Guardrail Evaluation
+        retrieval_guard_timer = Timer()
+        contexts_to_check = [
+            {
+                "content": c.content,
+                "user_id": c.metadata.get("user_id"),
+                "document_id": str(c.document_id),
+            }
+            for c in chunks
+        ]
+        # Include cached and memory contexts in inspection
+        for cached in cached_contexts:
+            contexts_to_check.append({"content": cached.content, "user_id": str(user_id)})
+        for mem in memory_contexts:
+            contexts_to_check.append({"content": mem.content, "user_id": str(user_id)})
+
+        retrieval_guard_res = await self.guardrails.retrieval_guard.evaluate(
+            query=query,
+            contexts=contexts_to_check,
+            user_id=user_id,
+            request_id=req_id,
+        )
+        retrieval_guard_latency_ms = retrieval_guard_timer.stop()
+        metrics_rec.increment("guardrail_checks_total")
+        metrics_rec.observe("guardrail_latency", retrieval_guard_latency_ms)
+
+        obs_logger.log_stage_completed(
+            EventType.RETRIEVAL_GUARDRAIL_COMPLETED,
+            request_id=req_id,
+            session_id=session_id,
+            decision=retrieval_guard_res.decision.value,
+            latency_ms=retrieval_guard_latency_ms,
+        )
+
+        if retrieval_guard_res.is_blocked:
+            metrics_rec.increment("guardrail_blocked_total")
+            metrics_rec.increment("guardrail_retrieval_violations_total")
+            obs_logger.log_stage_completed(
+                EventType.GUARDRAIL_BLOCKED,
+                request_id=req_id,
+                session_id=session_id,
+                stage="RETRIEVAL",
+                reason=retrieval_guard_res.metadata.reason,
+            )
+            blocked_msg = "Retrieved content failed security validation policies."
+            await chat_repo.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=blocked_msg,
+                sources=[],
+            )
+            total_lat = total_timer.stop()
+            meta = RetrievalMetadata(
+                retrieval_method="none",
+                candidates_count=candidate_count,
+                top_k=0,
+                reranking_enabled=False,
+                retrieval_latency_ms=round(retrieval_latency, 2),
+                reranking_latency_ms=round(reranking_latency, 2),
+                llm_latency_ms=0.0,
+                total_latency_ms=round(total_lat, 2),
+                guardrails_enabled=True,
+                guardrail_input_decision=input_guard_res.decision.value,
+                guardrail_retrieval_decision="BLOCK",
+                guardrail_latency_ms=round(input_guard_latency_ms + retrieval_guard_latency_ms, 2),
+                guardrail_violations=[v.reason for v in retrieval_guard_res.violations],
+                request_id=req_id,
+            )
+            return ChatResponse(
+                session_id=session_id,
+                query=query,
+                answer=blocked_msg,
+                sources=[],
+                retrieved_chunks=[],
+                metadata=meta,
+                request_id=req_id,
+            )
+        else:
+            metrics_rec.increment("guardrail_allowed_total")
+
         prompt_timer = Timer()
         built_context = self.context_builder.build_context(chunks)
         system_prompt = PromptBuilder.build_system_prompt()
@@ -365,7 +519,6 @@ class RAGPipeline:
                 system_prompt=system_prompt,
             )
         llm_latency_ms = llm_timer.stop()
-        total_latency_ms = total_timer.stop()
 
         obs_logger.log_stage_completed(
             EventType.LLM_COMPLETED,
@@ -375,6 +528,48 @@ class RAGPipeline:
             model=llm_mod_str,
             latency_ms=llm_latency_ms,
         )
+
+        # 3. Output Guardrail Evaluation
+        output_guard_timer = Timer()
+        output_guard_res = await self.guardrails.output_guard.evaluate(
+            query=query,
+            response_text=answer,
+            contexts=contexts_to_check,
+            request_id=req_id,
+        )
+        output_guard_latency_ms = output_guard_timer.stop()
+        metrics_rec.increment("guardrail_checks_total")
+        metrics_rec.observe("guardrail_latency", output_guard_latency_ms)
+
+        obs_logger.log_stage_completed(
+            EventType.OUTPUT_GUARDRAIL_COMPLETED,
+            request_id=req_id,
+            session_id=session_id,
+            decision=output_guard_res.decision.value,
+            latency_ms=output_guard_latency_ms,
+        )
+
+        total_latency_ms = total_timer.stop()
+
+        output_violations = []
+        if output_guard_res.is_blocked:
+            metrics_rec.increment("guardrail_blocked_total")
+            metrics_rec.increment("guardrail_output_violations_total")
+            obs_logger.log_stage_completed(
+                EventType.GUARDRAIL_BLOCKED,
+                request_id=req_id,
+                session_id=session_id,
+                stage="OUTPUT",
+                reason=output_guard_res.metadata.reason,
+            )
+            answer = "I cannot provide this response because it violates safety and non-disclosure policies."
+            output_violations = [v.reason for v in output_guard_res.violations]
+            built_context.citations = []
+        elif output_guard_res.is_sanitized:
+            metrics_rec.increment("guardrail_sanitized_total")
+            answer = output_guard_res.safe_text
+        else:
+            metrics_rec.increment("guardrail_allowed_total")
 
         # Save assistant message with citations
         sources_payload = [c.model_dump(mode="json") for c in built_context.citations]
@@ -547,6 +742,14 @@ class RAGPipeline:
             estimated_input_tokens=estimated_prompt_tokens,
             dropped_contexts_count=bundle.metadata.dropped_items,
             dropped_reasons=dropped_reasons,
+            guardrails_enabled=True,
+            guardrail_input_decision=input_guard_res.decision.value,
+            guardrail_retrieval_decision=retrieval_guard_res.decision.value,
+            guardrail_output_decision=output_guard_res.decision.value,
+            guardrail_latency_ms=round(
+                input_guard_latency_ms + retrieval_guard_latency_ms + output_guard_latency_ms, 2
+            ),
+            guardrail_violations=output_violations,
         )
 
         retrieved_chunks_payload = [
@@ -617,6 +820,55 @@ class RAGPipeline:
                 data={"user_id": str(user_id)},
             )
         )
+
+        # 1. Input Guardrail Evaluation
+        input_guard_timer = Timer()
+        input_guard_res = await self.guardrails.input_guard.evaluate(
+            query=query,
+            user_id=user_id,
+            session_id=session_id,
+            request_id=req_id,
+        )
+        input_guard_latency_ms = input_guard_timer.stop()
+        metrics_rec.increment("guardrail_checks_total")
+        metrics_rec.observe("guardrail_latency", input_guard_latency_ms)
+
+        obs_logger.log_stage_completed(
+            EventType.INPUT_GUARDRAIL_COMPLETED,
+            request_id=req_id,
+            session_id=session_id,
+            decision=input_guard_res.decision.value,
+            latency_ms=input_guard_latency_ms,
+        )
+
+        if input_guard_res.is_blocked:
+            metrics_rec.increment("guardrail_blocked_total")
+            metrics_rec.increment("guardrail_input_violations_total")
+            obs_logger.log_stage_completed(
+                EventType.GUARDRAIL_BLOCKED,
+                request_id=req_id,
+                session_id=session_id,
+                stage="INPUT",
+                reason=input_guard_res.metadata.reason,
+            )
+            blocked_msg = (
+                "I cannot fulfill this request because it violates application safety guidelines."
+            )
+            await chat_repo.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=blocked_msg,
+                sources=[],
+            )
+            yield f"data: {json.dumps({'type': 'error', 'message': blocked_msg, 'code': 'GUARDRAIL_BLOCKED'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'session_id': str(session_id), 'request_id': str(req_id), 'sources': [], 'metadata': {'guardrail_input_decision': 'BLOCK', 'guardrails_enabled': True}})}\n\n"
+            return
+
+        if input_guard_res.is_sanitized:
+            metrics_rec.increment("guardrail_sanitized_total")
+            query = input_guard_res.safe_text
+        else:
+            metrics_rec.increment("guardrail_allowed_total")
 
         # Yield session_id and request_id initialization event
         yield f"data: {json.dumps({'type': 'init', 'session_id': str(session_id), 'request_id': str(req_id)})}\n\n"
@@ -757,6 +1009,62 @@ class RAGPipeline:
             latency_ms=fusion_latency_ms,
         )
 
+        # 2. Retrieval Guardrail Evaluation
+        retrieval_guard_timer = Timer()
+        contexts_to_check = [
+            {
+                "content": c.content,
+                "user_id": c.metadata.get("user_id"),
+                "document_id": str(c.document_id),
+            }
+            for c in chunks
+        ]
+        for cached in cached_contexts:
+            contexts_to_check.append({"content": cached.content, "user_id": str(user_id)})
+        for mem in memory_contexts:
+            contexts_to_check.append({"content": mem.content, "user_id": str(user_id)})
+
+        retrieval_guard_res = await self.guardrails.retrieval_guard.evaluate(
+            query=query,
+            contexts=contexts_to_check,
+            user_id=user_id,
+            request_id=req_id,
+        )
+        retrieval_guard_latency_ms = retrieval_guard_timer.stop()
+        metrics_rec.increment("guardrail_checks_total")
+        metrics_rec.observe("guardrail_latency", retrieval_guard_latency_ms)
+
+        obs_logger.log_stage_completed(
+            EventType.RETRIEVAL_GUARDRAIL_COMPLETED,
+            request_id=req_id,
+            session_id=session_id,
+            decision=retrieval_guard_res.decision.value,
+            latency_ms=retrieval_guard_latency_ms,
+        )
+
+        if retrieval_guard_res.is_blocked:
+            metrics_rec.increment("guardrail_blocked_total")
+            metrics_rec.increment("guardrail_retrieval_violations_total")
+            obs_logger.log_stage_completed(
+                EventType.GUARDRAIL_BLOCKED,
+                request_id=req_id,
+                session_id=session_id,
+                stage="RETRIEVAL",
+                reason=retrieval_guard_res.metadata.reason,
+            )
+            blocked_msg = "Retrieved content failed security validation policies."
+            await chat_repo.add_message(
+                session_id=session_id,
+                role="assistant",
+                content=blocked_msg,
+                sources=[],
+            )
+            yield f"data: {json.dumps({'type': 'error', 'message': blocked_msg, 'code': 'GUARDRAIL_BLOCKED'})}\n\n"
+            yield f"data: {json.dumps({'type': 'done', 'session_id': str(session_id), 'request_id': str(req_id), 'sources': [], 'metadata': {'guardrail_retrieval_decision': 'BLOCK', 'guardrails_enabled': True}})}\n\n"
+            return
+        else:
+            metrics_rec.increment("guardrail_allowed_total")
+
         prompt_timer = Timer()
         built_context = self.context_builder.build_context(chunks)
         system_prompt = PromptBuilder.build_system_prompt()
@@ -834,6 +1142,48 @@ class RAGPipeline:
             model=stream_mod_str,
             latency_ms=llm_latency_ms,
         )
+
+        # 3. Output Guardrail Evaluation
+        output_guard_timer = Timer()
+        output_guard_res = await self.guardrails.output_guard.evaluate(
+            query=query,
+            response_text=full_answer,
+            contexts=contexts_to_check,
+            request_id=req_id,
+        )
+        output_guard_latency_ms = output_guard_timer.stop()
+        metrics_rec.increment("guardrail_checks_total")
+        metrics_rec.observe("guardrail_latency", output_guard_latency_ms)
+
+        obs_logger.log_stage_completed(
+            EventType.OUTPUT_GUARDRAIL_COMPLETED,
+            request_id=req_id,
+            session_id=session_id,
+            decision=output_guard_res.decision.value,
+            latency_ms=output_guard_latency_ms,
+        )
+
+        output_violations = []
+        if output_guard_res.is_blocked:
+            metrics_rec.increment("guardrail_blocked_total")
+            metrics_rec.increment("guardrail_output_violations_total")
+            obs_logger.log_stage_completed(
+                EventType.GUARDRAIL_BLOCKED,
+                request_id=req_id,
+                session_id=session_id,
+                stage="OUTPUT",
+                reason=output_guard_res.metadata.reason,
+            )
+            full_answer = "I cannot provide this response because it violates safety and non-disclosure policies."
+            output_violations = [v.reason for v in output_guard_res.violations]
+            built_context.citations = []
+            # Notify client to replace unsafe content
+            yield f"data: {json.dumps({'type': 'redact', 'message': full_answer})}\n\n"
+        elif output_guard_res.is_sanitized:
+            metrics_rec.increment("guardrail_sanitized_total")
+            full_answer = output_guard_res.safe_text
+        else:
+            metrics_rec.increment("guardrail_allowed_total")
 
         # Save assistant message
         sources_payload = [c.model_dump(mode="json") for c in built_context.citations]
@@ -992,6 +1342,14 @@ class RAGPipeline:
                 "estimated_input_tokens": estimated_prompt_tokens,
                 "dropped_contexts_count": bundle.metadata.dropped_items,
                 "dropped_reasons": dropped_reasons,
+                "guardrails_enabled": True,
+                "guardrail_input_decision": input_guard_res.decision.value,
+                "guardrail_retrieval_decision": retrieval_guard_res.decision.value,
+                "guardrail_output_decision": output_guard_res.decision.value,
+                "guardrail_latency_ms": round(
+                    input_guard_latency_ms + retrieval_guard_latency_ms + output_guard_latency_ms, 2
+                ),
+                "guardrail_violations": output_violations,
             },
         }
         yield f"data: {json.dumps(done_payload)}\n\n"

@@ -15,6 +15,7 @@ os.environ["LLM_PROVIDER"] = "mock"
 os.environ["SECRET_KEY"] = "test_super_secret_jwt_key_at_least_32_chars_long"
 os.environ["RERANKING_ENABLED"] = "false"
 os.environ["UPLOAD_DIR"] = "/tmp/nexarag_test_uploads"
+os.environ["DOCUMENTS_ADMIN_ONLY"] = "false"
 
 # Add backend directory to sys.path
 backend_path = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))

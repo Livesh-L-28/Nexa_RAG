@@ -93,6 +93,14 @@ class InMemoryMetricsRecorder(MetricsRecorder):
             "cag_misses_total": 0.0,
             "memories_retrieved_total": 0.0,
             "contexts_dropped_total": 0.0,
+            "guardrail_checks_total": 0.0,
+            "guardrail_allowed_total": 0.0,
+            "guardrail_blocked_total": 0.0,
+            "guardrail_sanitized_total": 0.0,
+            "guardrail_input_violations_total": 0.0,
+            "guardrail_retrieval_violations_total": 0.0,
+            "guardrail_output_violations_total": 0.0,
+            "guardrail_provider_failures_total": 0.0,
         }
 
         # Stage latency distributions
@@ -108,6 +116,7 @@ class InMemoryMetricsRecorder(MetricsRecorder):
             "prompt_latency": LatencyStat(),
             "llm_latency": LatencyStat(),
             "llm_ttft": LatencyStat(),
+            "guardrail_latency": LatencyStat(),
         }
 
         # Categories / breakdowns
