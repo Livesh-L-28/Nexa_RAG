@@ -22,7 +22,7 @@ The user interface is built on a **Linear- and Notion-inspired design system** w
 3. [User Roles & RBAC (Admin vs User)](#-user-roles--rbac-admin-vs-user)
 4. [Quickstart Guide](#-quickstart-guide)
    - [Option A: Local Development (Fastest Offline Setup)](#option-a-local-development-fastest-offline-setup)
-   - [Option B: Full-Stack Docker Compose](#option-b-full-stack-docker-compose)
+   - [Option B: Full-Stack Docker Compose & Multi-Device Setup](#option-b-full-stack-docker-compose--multi-device-setup)
    - [Option C: Exposing via Cloudflare Tunnel](#option-c-exposing-via-cloudflare-tunnel-public-url)
 5. [Hosting & Cloud Deployment](#-hosting--cloud-deployment)
    - [1. Linux VPS (AWS EC2 / DigitalOcean / Hetzner)](#1-linux-vps-aws-ec2--digitalocean--hetzner)
@@ -201,35 +201,144 @@ npm run dev
 
 ---
 
-### Option B: Full-Stack Docker Compose
+### Option B: Full-Stack Docker Compose & Multi-Device Setup
 
-Run the entire production stack (PostgreSQL 16 with `pgvector`, FastAPI backend, and Nginx frontend):
+Run the entire production stack (PostgreSQL 16 with `pgvector`, FastAPI backend, and Nginx frontend). Pre-built production images are hosted publicly on **GitHub Container Registry (GHCR)**.
 
+#### 🐳 Container Stack Specifications
+
+| Service / Container | Image / Source | Port Mapping | Storage & Volumes | Role & Internal Configuration |
+|---|---|---|---|---|
+| **`nexarag_db`** | `pgvector/pgvector:pg16` | `5432` *(internal)* | `pgdata:/var/lib/postgresql/data` | PostgreSQL 16 relational database with native 384-d vector embeddings index (`pgvector` HNSW). Health checked via `pg_isready`. |
+| **`nexarag_backend`** | `ghcr.io/livesh-l-28/nexa-rag-backend:latest` *(or `./backend`)* | `8000:8000` | `./data/uploads:/app/data/uploads` | FastAPI API gateway, hybrid search (pgvector + BM25Okapi), Cross-Encoder reranker, 3-tier NeMo guardrails, and context orchestrator. Runs as non-root `appuser` (UID 1000). |
+| **`nexarag_frontend`** | `ghcr.io/livesh-l-28/nexa-rag-frontend:latest` *(or `./frontend`)* | `${FRONTEND_PORT:-3001}:80` | None *(Stateless)* | Nginx Alpine serving compiled React 18 SPA. Configured with `proxy_buffering off;` and `proxy_read_timeout 600s;` for real-time SSE token streaming and 50MB file uploads. |
+
+**Startup Dependency Sequence**:
+`nexarag_db` (becomes `healthy`) ➔ `nexarag_backend` (initializes database schemas, seeds accounts, reaches `healthy`) ➔ `nexarag_frontend` (starts proxying).
+
+---
+
+#### 💻 Step-by-Step Installation on Another Device (Laptop / Desktop / VPS)
+
+Follow these steps to deploy NexaRAG onto a fresh laptop or another computer without needing Python, Node.js, or local compilers installed:
+
+##### 1. Prerequisites on the Target Device
+- **Docker Engine**: Version 20.10.0+ (or [Docker Desktop](https://www.docker.com/products/docker-desktop/) on macOS / Windows with WSL2).
+- **Docker Compose**: Version 2.0.0+ (included with Docker Desktop or `docker compose` plugin on Linux).
+- **Hardware Specs**: Minimum 4 GB RAM (8 GB recommended for embeddings & reranking inference); 10 GB available disk space.
+
+##### 2. Obtain Project Files on the Target Device
+Open a terminal on the new machine:
 ```bash
-# 1. Clone repository & configure environment
+# Clone the repository
 git clone https://github.com/Livesh-L-28/Nexa_RAG.git
 cd Nexa_RAG
+```
+*(Tip: If transferring to an air-gapped or minimal system, you only need `docker-compose.yml` and `.env.example` from the repository).*
+
+##### 3. Configure Environment Variables (`.env`)
+Create your `.env` configuration from the provided template:
+```bash
 cp .env.example .env
+```
+Open `.env` in any text editor. If you plan to use cloud LLMs, add your API keys:
+```env
+# Optional: Set to 'gemini' or 'groq' (defaults to 'mock' for fully offline execution)
+LLM_PROVIDER=gemini
+GEMINI_API_KEY=AIzaSy...
 
-# 2. Build and launch all services
-docker compose up -d --build
-
-# 3. View service status
-docker compose ps
+# Or for Groq Cloud:
+# LLM_PROVIDER=groq
+# GROQ_API_KEY=gsk_...
 ```
 
-- **Frontend Application**: [http://localhost:3001](http://localhost:3001)
-- **Backend API & Swagger Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
-- **Health Check Probe**: [http://localhost:8000/health](http://localhost:8000/health)
+##### 4. Pull Pre-Built GHCR Images
+Pull the pre-compiled container images directly from GitHub Container Registry:
+```bash
+docker compose pull
+```
+*(Alternatively, you can pull each image manually:)*
+```bash
+docker pull ghcr.io/livesh-l-28/nexa-rag-backend:latest
+docker pull ghcr.io/livesh-l-28/nexa-rag-frontend:latest
+docker pull pgvector/pgvector:pg16
+```
 
-To view live container logs:
+##### 5. Launch the Application Stack
+Start all three containers in detached (background) mode:
+```bash
+docker compose up -d
+```
+
+##### 6. Verify Deployment Health
+Check that all services started and passed their automated health probes:
+```bash
+docker compose ps
+```
+You should see all three services reporting `healthy` or `running`:
+- `nexarag_db` (healthy)
+- `nexarag_backend` (healthy)
+- `nexarag_frontend` (running)
+
+To verify the backend health probe directly:
+```bash
+curl http://localhost:8000/health
+```
+
+To tail live server logs:
 ```bash
 docker compose logs -f backend
 ```
 
-To stop the stack:
+##### 7. Access NexaRAG in Your Browser
+- **Web User Interface**: Open **`http://localhost:3001`**
+- **Backend API & Swagger Docs**: Open **`http://localhost:8000/docs`**
+
+**Accessing from other devices on the same Local Network (LAN)**:
+If you want other phones, tablets, or computers on your local Wi-Fi/LAN to access NexaRAG, find the host machine's local IP (e.g. via `ipconfig` on Windows or `ip a` / `ifconfig` on Linux/Mac) and open:
+```text
+http://<HOST_LOCAL_IP>:3001
+```
+*(Ensure incoming connections on port 3001 are permitted through your firewall).*
+
+**Default Pre-Seeded Accounts**:
+| Role | Email | Password | Access Level |
+|---|---|---|---|
+| **Admin** | `admin@nexarag.ai` | `adminpassword123` | Full governance, NeMo guardrails, user registry, system analytics |
+| **Analyst** | `demo@nexarag.ai` | `password123` | Document ingestion, hybrid search, citations inspector, personal memory |
+
+---
+
+#### 🔄 Container Maintenance & Lifecycle
+
+- **Update to the Latest Images on Target Device**:
+  ```bash
+  docker compose pull
+  docker compose up -d --remove-orphans
+  ```
+- **Stop Containers Gracefully** *(Preserves database and uploaded files)*:
+  ```bash
+  docker compose stop
+  ```
+- **Resume Containers**:
+  ```bash
+  docker compose start
+  ```
+- **Tear Down Containers & Networks** *(Preserves database volume)*:
+  ```bash
+  docker compose down
+  ```
+- **Clean Database Reset / Complete Wipe** *(Destructive — drops all indexed data and users)*:
+  ```bash
+  docker compose down -v
+  ```
+
+---
+
+#### 🛠️ Developer Alternative: Building Locally from Source
+If you are developing custom code on backend Python files or frontend React components, rebuild the container images from local source code instead of pulling from GHCR:
 ```bash
-docker compose down
+docker compose up -d --build
 ```
 
 ---

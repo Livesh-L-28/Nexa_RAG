@@ -136,7 +136,16 @@ When Docker Compose launches:
 
 ## 6. Common Docker Compose Commands
 
-### Standard Lifecycle
+### Option 1: Instant Launch with Pre-Built GHCR Images (Recommended)
+```bash
+# Pull the pre-built images from GitHub Container Registry
+docker compose pull
+
+# Start all services in the background
+docker compose up -d
+```
+
+### Option 2: Build and Start from Local Source Code
 ```bash
 # Build and start all services in the background
 docker compose up -d --build
