@@ -15,7 +15,8 @@ import {
   User,
 } from '../types';
 
-const API_BASE = '/api/v1';
+const BASE_URL = (import.meta.env.VITE_API_BASE_URL || '').replace(/\/+$/, '');
+const API_BASE = `${BASE_URL}/api/v1`;
 
 function getToken(): string | null {
   return localStorage.getItem('nexarag_token');
@@ -288,11 +289,11 @@ export const api = {
 
   health: {
     checkReady: async (): Promise<SystemHealth> => {
-      const res = await fetch('/health/ready');
+      const res = await fetch(`${BASE_URL}/health/ready`);
       return res.json();
     },
     checkLive: async (): Promise<{ status: string; app: string; environment: string; timestamp: string }> => {
-      const res = await fetch('/health');
+      const res = await fetch(`${BASE_URL}/health`);
       return res.json();
     },
   },

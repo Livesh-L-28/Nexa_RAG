@@ -388,11 +388,133 @@ Cloudflare will output a public HTTPS URL (e.g., `https://random-words.trycloudf
 
 ---
 
-### 2. Managed PaaS (Render / Railway / Supabase)
+### 2. Managed PaaS — Full-Stack Render Deployment
 
-- **Database**: Spin up a PostgreSQL 16 database on **Supabase**, **Neon**, or **Railway** (all support `pgvector` natively). Copy the connection URI into `DATABASE_URL`.
-- **Backend**: Connect your GitHub repository to **Render** or **Railway**. Choose `Docker` environment, pointing to `backend/Dockerfile`. Add your environment variables (`DATABASE_URL`, `SECRET_KEY`, `GEMINI_API_KEY`, etc.).
-- **Frontend**: Deploy `frontend/` on **Vercel** or **Cloudflare Pages**. Set rewrite rules in `vercel.json` or configure the backend URL proxy.
+NexaRAG is fully pre-configured for **Render** via Infrastructure as Code ([render.yaml](file:///Users/livesh/NexaRAG/render.yaml)) and can be deployed with zero DevOps overhead.
+
+```text
+                               Client Browser
+                                     │
+                                     ▼
+                ┌─────────────────────────────────────────┐
+                │        Frontend (Render Static Site)    │
+                │        https://nexarag-ui.onrender.com  │
+                └────────────────────┬────────────────────┘
+                                     │ HTTPS / SSE / CORS
+                                     ▼
+                ┌─────────────────────────────────────────┐
+                │       Backend (Render Web Service)      │
+                │       https://nexarag-api.onrender.com  │
+                │       - Docker runtime (FastAPI + NeMo) │
+                │       - Persistent Disk: /app/data/uploads
+                └────────────────────┬────────────────────┘
+                                     │ Private Network (Internal URL)
+                                     ▼
+                ┌─────────────────────────────────────────┐
+                │      Database (Render Managed Postgres) │
+                │      - PostgreSQL 16 + pgvector         │
+                └─────────────────────────────────────────┘
+```
+
+---
+
+#### Approach A: 🚀 One-Click Blueprint Deployment (Recommended)
+
+The repository includes a root [render.yaml](file:///Users/livesh/NexaRAG/render.yaml) file. Render reads this Blueprint and automatically provisions the PostgreSQL database, backend service with persistent disk, and frontend static site.
+
+1. **Commit and Push your changes to GitHub**:
+   ```bash
+   git push origin main
+   ```
+2. **Open Render Dashboard**:
+   - Go to [dashboard.render.com](https://dashboard.render.com/).
+   - Click **New +** ➔ **Blueprint**.
+   - Connect your GitHub repository (`Livesh-L-28/Nexa_RAG`).
+3. **Configure Environment Parameters**:
+   Render will parse `render.yaml` and prompt you for secrets:
+   - `GEMINI_API_KEY`: Enter your Google AI Studio API key (or `GROQ_API_KEY` for Groq).
+   - `LLM_PROVIDER`: Set to `gemini` (or `groq` / `mock`).
+4. **Click "Apply"**:
+   Render will automatically create the PostgreSQL 16 database, build and deploy the Docker backend, build the frontend SPA, and wire their internal networking together!
+
+---
+
+#### Approach B: 🛠️ Manual Step-by-Step Dashboard Setup
+
+If you prefer to configure each component manually through the Render UI:
+
+##### Step 1: Create Managed PostgreSQL on Render
+1. In Render Dashboard, click **New +** ➔ **PostgreSQL**.
+2. Set **Name**: `nexarag-db`
+3. Set **Database**: `nexarag`
+4. Set **User**: `postgres`
+5. Set **PostgreSQL Version**: `16`
+6. Choose the **Starter** (or Free) plan and click **Create Database**.
+7. Once created, copy the **Internal Database URL** (e.g. `postgres://postgres:password@dpg-xxxx-a:5432/nexarag`).
+
+##### Step 2: Create Backend Web Service
+1. In Render Dashboard, click **New +** ➔ **Web Service**.
+2. Connect your GitHub repository `Livesh-L-28/Nexa_RAG`.
+3. Set the following parameters:
+   - **Name**: `nexarag-backend`
+   - **Region**: Same region as your database (e.g., Oregon or Ohio).
+   - **Language / Runtime**: **Docker**
+   - **Dockerfile Path**: `./backend/Dockerfile`
+   - **Docker Context**: `./backend`
+   - **Instance Type**: **Starter** (minimum 1GB RAM recommended).
+4. Add a **Persistent Disk** (under Advanced):
+   - **Name**: `nexarag-uploads`
+   - **Mount Path**: `/app/data/uploads`
+   - **Size**: `10 GB`
+5. Configure **Environment Variables**:
+   | Variable | Value | Description |
+   |---|---|---|
+   | `ENVIRONMENT` | `production` | Production mode |
+   | `DATABASE_URL` | *(Paste Internal Database URL from Step 1)* | Connection string |
+   | `DATABASE_SYNC_URL` | *(Paste Internal Database URL from Step 1)* | Sync URL |
+   | `SECRET_KEY` | *(Generate 32+ random hex chars)* | JWT signing secret |
+   | `LLM_PROVIDER` | `gemini` (or `groq` / `mock`) | Active AI engine |
+   | `GEMINI_API_KEY` | `AIzaSy...` | Your Gemini key |
+   | `CORS_ORIGINS` | `*` | Or your Render frontend URL |
+   | `UPLOAD_DIR` | `/app/data/uploads` | Document storage path |
+6. Set **Health Check Path** (under Advanced):
+   - `/health`
+7. Click **Create Web Service**.
+8. Once deployed, copy your backend public URL (e.g., `https://nexarag-backend.onrender.com`).
+
+##### Step 3: Create Frontend Static Site
+1. In Render Dashboard, click **New +** ➔ **Static Site**.
+2. Connect your GitHub repository `Livesh-L-28/Nexa_RAG`.
+3. Set the following parameters:
+   - **Name**: `nexarag-frontend`
+   - **Root Directory**: `frontend`
+   - **Build Command**: `npm install && npm run build`
+   - **Publish Directory**: `dist`
+4. Configure **Environment Variables**:
+   | Variable | Value |
+   |---|---|
+   | `VITE_API_BASE_URL` | `https://nexarag-backend.onrender.com` *(Backend URL from Step 2)* |
+5. Add **Rewrite Rule** (under Redirects/Rewrites):
+   - **Type**: `Rewrite`
+   - **Source**: `/*`
+   - **Destination**: `/index.html`
+6. Click **Create Static Site**.
+
+---
+
+#### 🧪 Verifying Render Deployment
+
+1. **Verify Backend Health**:
+   ```bash
+   curl https://nexarag-backend.onrender.com/health
+   # Returns: {"status":"healthy","app":"NexaRAG","environment":"production"}
+   ```
+2. **Access Web Application**:
+   Open your frontend URL: `https://nexarag-frontend.onrender.com`.
+3. **Sign In**:
+   Use the pre-seeded admin or demo account:
+   - **Admin**: `admin@nexarag.ai` / `adminpassword123`
+   - **Analyst**: `demo@nexarag.ai` / `password123`
 
 ---
 

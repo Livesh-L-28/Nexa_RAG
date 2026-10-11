@@ -15,6 +15,18 @@ from app.core.logging import logger
 
 settings = get_settings()
 
+
+def get_async_database_url(url: str) -> str:
+    """Normalize database URL for asyncpg when connecting via standard postgresql URL."""
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgresql://") and not url.startswith("postgresql+asyncpg://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    return url
+
+
+async_db_url = get_async_database_url(settings.DATABASE_URL)
+
 # Configure engine based on driver
 engine_kwargs = {
     "echo": settings.DB_ECHO,
@@ -22,7 +34,7 @@ engine_kwargs = {
 }
 
 # If using PostgreSQL with asyncpg, add pool settings
-if "postgresql" in settings.DATABASE_URL:
+if "postgresql" in async_db_url:
     engine_kwargs.update(
         {
             "pool_size": settings.DB_POOL_SIZE,
@@ -31,7 +43,7 @@ if "postgresql" in settings.DATABASE_URL:
         }
     )
 
-engine: AsyncEngine = create_async_engine(settings.DATABASE_URL, **engine_kwargs)
+engine: AsyncEngine = create_async_engine(async_db_url, **engine_kwargs)
 
 AsyncSessionLocal = async_sessionmaker(
     bind=engine,
